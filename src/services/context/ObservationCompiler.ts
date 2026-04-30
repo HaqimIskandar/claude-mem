@@ -21,8 +21,12 @@ import type {
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
 /**
- * Query observations from database with type and concept filtering
+ * Query observations from database with type and concept filtering.
+ * Applies per-session diversity cap: max MAX_PER_SESSION observations per memory_session_id
+ * to prevent a single active session from dominating the context window.
  */
+const MAX_PER_SESSION = 5;
+
 export function queryObservations(
   db: SessionStore,
   project: string,
@@ -33,7 +37,10 @@ export function queryObservations(
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  // Fetch 3x the requested count to have enough candidates after per-session capping
+  const fetchLimit = config.totalObservationCount * 3;
+
+  const rows = db.db.prepare(`
     SELECT
       o.id,
       o.memory_session_id,
@@ -64,8 +71,23 @@ export function queryObservations(
     project,
     ...typeArray,
     ...conceptArray,
-    config.totalObservationCount
+    fetchLimit
   ) as Observation[];
+
+  // Per-session diversity cap: keep at most MAX_PER_SESSION per memory_session_id
+  const sessionCounts = new Map<string, number>();
+  const result: Observation[] = [];
+  logger.debug('LAYER2', `Per-session diversity cap active | MAX_PER_SESSION=${MAX_PER_SESSION} | candidates=${rows.length}`);
+  for (const obs of rows) {
+    const sid = obs.memory_session_id;
+    const count = sessionCounts.get(sid) || 0;
+    if (count >= MAX_PER_SESSION) continue;
+    sessionCounts.set(sid, count + 1);
+    result.push(obs);
+    if (result.length >= config.totalObservationCount) break;
+  }
+
+  return result;
 }
 
 /**
@@ -115,7 +137,10 @@ export function queryObservationsMulti(
   // Build IN clause for projects
   const projectPlaceholders = projects.map(() => '?').join(',');
 
-  return db.db.prepare(`
+  // Fetch 3x to have candidates after per-session capping
+  const fetchLimit = config.totalObservationCount * 3;
+
+  const rows = db.db.prepare(`
     SELECT
       o.id,
       o.memory_session_id,
@@ -148,8 +173,23 @@ export function queryObservationsMulti(
     ...projects,
     ...typeArray,
     ...conceptArray,
-    config.totalObservationCount
+    fetchLimit
   ) as Observation[];
+
+  // Per-session diversity cap: same logic as queryObservations
+  const sessionCounts = new Map<string, number>();
+  const result: Observation[] = [];
+  logger.debug('LAYER2', `Per-session diversity cap active (multi) | MAX_PER_SESSION=${MAX_PER_SESSION} | candidates=${rows.length}`);
+  for (const obs of rows) {
+    const sid = obs.memory_session_id;
+    const count = sessionCounts.get(sid) || 0;
+    if (count >= MAX_PER_SESSION) continue;
+    sessionCounts.set(sid, count + 1);
+    result.push(obs);
+    if (result.length >= config.totalObservationCount) break;
+  }
+
+  return result;
 }
 
 /**
