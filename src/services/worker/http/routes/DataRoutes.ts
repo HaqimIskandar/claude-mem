@@ -76,6 +76,10 @@ const importSchema = z.object({
   prompts: z.array(z.unknown()).optional(),
 }).passthrough();
 
+const forgetSchema = z.object({
+  ids: integerArrayLike,
+}).passthrough();
+
 export class DataRoutes extends BaseRouteHandler {
   constructor(
     private paginationHelper: PaginationHelper,
@@ -112,6 +116,9 @@ export class DataRoutes extends BaseRouteHandler {
 
     // Import endpoint
     app.post('/api/import', validateBody(importSchema), this.handleImport.bind(this));
+
+    // Forget (delete) observations by ID
+    app.post('/api/observations/forget', validateBody(forgetSchema), this.handleForgetObservations.bind(this));
   }
 
   /**
@@ -487,6 +494,30 @@ export class DataRoutes extends BaseRouteHandler {
     res.json({
       success: true,
       stats
+    });
+  });
+
+  /**
+   * Forget (delete) observations by ID
+   * POST /api/observations/forget
+   */
+  private handleForgetObservations = this.wrapHandler((req: Request, res: Response): void => {
+    const { ids } = req.body as { ids: number[] };
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      res.status(400).json({ error: 'ids must be a non-empty array of integers' });
+      return;
+    }
+
+    const db = this.dbManager.getSessionStore().db;
+    const placeholders = ids.map(() => '?').join(',');
+    const stmt = db.prepare(`DELETE FROM observations WHERE id IN (${placeholders})`);
+    const result = stmt.run(...ids);
+
+    res.json({
+      success: true,
+      deleted: result.changes,
+      ids
     });
   });
 
